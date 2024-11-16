@@ -81,7 +81,6 @@ function createCache(lat: number, lng: number) {
 }
 
 function cachePopup(latLng: L.LatLng): HTMLDivElement {
-  // Return popup if it already exists
   if (cachePopups.has(latLng)) {
     return cachePopups.get(latLng)!;
   }
@@ -89,7 +88,6 @@ function cachePopup(latLng: L.LatLng): HTMLDivElement {
   let coins: number = Math.ceil(setRandom(0, MAX_CACHE_COINS_SPAWN));
   const div: HTMLDivElement = document.createElement("div");
 
-  // Collect and Deposit Buttons
   const collect: HTMLButtonElement = document.createElement("button");
   collect.innerHTML = "Collect";
   collect.id = "collect";
@@ -132,12 +130,10 @@ function updateCachePopup(div: HTMLDivElement, coins: number): void {
   const collect = div.querySelector<HTMLButtonElement>("#collect")!;
   const deposit = div.querySelector<HTMLButtonElement>("#deposit")!;
 
-  // Update coin value
   div.innerHTML = `Coins: ${coins}<div>`;
   div.appendChild(collect);
   div.appendChild(deposit);
 
-  // Disable buttons depending on coin values
   collect.disabled = coins <= 0;
   deposit.disabled = playerCoins <= 0;
 }
