@@ -1,9 +1,20 @@
 // Imports
-import L from "leaflet";
+import Leaflet from "leaflet";
 import "./leafletWorkaround.ts";
 import "leaflet/dist/leaflet.css";
 import luck from "./luck.ts";
 import "./style.css";
+import { Board, Cell } from "./board.ts";
+
+interface Cache {
+  coins: Coin[];
+  div: HTMLDivElement;
+}
+
+interface Coin {
+  cell: Cell;
+  serial: number;
+}
 
 // App
 const app = document.querySelector<HTMLDivElement>("#app")!;
@@ -11,16 +22,19 @@ const APP_NAME = "Geocoin Carrier";
 document.title = APP_NAME;
 
 // Parameters
-const ORIGIN: L.LatLng = L.latLng(36.9895, -122.0628);
+const ORIGIN: Leaflet.LatLng = Leaflet.latLng(36.9895, -122.0628);
 const ZOOM: number = 19;
-const CACHE_SPAWN_COUNT: number = 12;
-const CACHE_SPAWN_RADIUS: number = 0.001;
-const MAX_CACHE_COINS_SPAWN: number = 64;
+const CACHE_SPAWN_CHANCE: number = 0.1;
+const MAX_CACHE_COINS_SPAWN: number = 3;
+
+const TILE_WIDTH: number = 0.0001;
+const TILE_VISIBILITY_RADIUS: number = 8;
+
 const SEED: string = "SEED";
 
 // Variables
-let playerCoins: number = 5;
-const cachePopups: Map<L.LatLng, HTMLDivElement> = new Map();
+const playerCache: Cache = { coins: [], div: document.createElement("div") };
+const caches: Map<Cell, Cache> = new Map();
 
 // Events
 const coinsChanged: Event = new Event("coins-changed");
@@ -34,106 +48,123 @@ function setRandom(min: number = 0, max: number = 1): number {
 }
 
 // Create Map
-const map = L.map(document.getElementById("map")!, {
+const board: Board = new Board(TILE_WIDTH, TILE_VISIBILITY_RADIUS);
+const map = Leaflet.map(document.getElementById("map")!, {
   center: ORIGIN,
   zoom: ZOOM,
   zoomControl: false,
   scrollWheelZoom: false,
 });
 
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+Leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: ZOOM,
   attribution:
     '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
 }).addTo(map);
 
 // Player Stats
-const coinDisplay: HTMLDivElement = document.createElement("div");
-coinDisplay.innerHTML = `Coins: ${playerCoins}`;
-app.appendChild(coinDisplay);
+playerCache.div.innerHTML = `Coins:`;
+app.appendChild(playerCache.div);
 
-coinDisplay.addEventListener("coins-changed", () => {
+playerCache.div.addEventListener("coins-changed", () => {
   // Update Coin Display
-  coinDisplay.innerHTML = `Coins: ${playerCoins}`;
+  playerCache.div.innerHTML = `Coins: <div>`;
+  playerCache.coins.forEach((coin) => {
+    playerCache.div.innerHTML += `${coinToString(coin)}<div>`;
+  });
 });
 
 // Player Marker
-const playerIcon = L.divIcon({
+const playerIcon = Leaflet.divIcon({
   html: "👤",
   iconAnchor: [16, 16],
   className: "player-icon",
 });
-const playerMarker = L.marker(ORIGIN, { icon: playerIcon });
+const playerMarker = Leaflet.marker(ORIGIN, { icon: playerIcon });
 playerMarker.bindTooltip("Your location");
 playerMarker.addTo(map);
 
-// Creating Caches
-for (let i = 0; i < CACHE_SPAWN_COUNT; i++) {
-  const lat = ORIGIN.lat + setRandom(-1, 1) * CACHE_SPAWN_RADIUS;
-  const lng = ORIGIN.lng + setRandom(-1, 1) * CACHE_SPAWN_RADIUS;
-  createCache(lat, lng);
+// Spawn Caches Nearby
+board.getCellsNearPoint(ORIGIN).forEach((cell) => {
+  if (setRandom() > CACHE_SPAWN_CHANCE) return;
+  createCache(cell);
+});
+
+function createCache(cell: Cell) {
+  const bounds: Leaflet.LatLngBounds = board.getCellBounds(cell);
+
+  const rect = Leaflet.rectangle(bounds);
+  rect.bindPopup(() => cachePopup(cell));
+  rect.addTo(map);
 }
 
-function createCache(lat: number, lng: number) {
-  const cacheMarker = L.marker(L.latLng(lat, lng));
-  cacheMarker.bindPopup(cachePopup, L.latLng(lat, lng));
-  cacheMarker.addTo(map);
-}
-
-function cachePopup(latLng: L.LatLng): HTMLDivElement {
-  if (cachePopups.has(latLng)) {
-    return cachePopups.get(latLng)!;
+function cachePopup(cell: Cell): HTMLDivElement {
+  // Return popup if it already exists
+  if (caches.has(cell)) {
+    updateCachePopup(caches.get(cell)!);
+    return caches.get(cell)!.div;
   }
 
-  let coins: number = Math.ceil(setRandom(0, MAX_CACHE_COINS_SPAWN));
-  const div: HTMLDivElement = document.createElement("div");
+  const cache: Cache = newCoinCache(cell, setRandom(0, MAX_CACHE_COINS_SPAWN));
 
+  // Collect and Deposit Buttons
   const collect: HTMLButtonElement = document.createElement("button");
   collect.innerHTML = "Collect";
   collect.id = "collect";
-  div.appendChild(collect);
+  cache.div.appendChild(collect);
 
   const deposit: HTMLButtonElement = document.createElement("button");
   deposit.innerHTML = "Deposit";
   deposit.id = "deposit";
-  div.appendChild(deposit);
+  cache.div.appendChild(deposit);
 
-  updateCachePopup(div, coins);
+  updateCachePopup(cache);
 
-  div.querySelector<HTMLButtonElement>("#collect")!.addEventListener(
-    "click",
-    () => {
-      if (coins <= 0) return;
-      coins--;
-      playerCoins++;
-      updateCachePopup(div, coins);
-      coinDisplay.dispatchEvent(coinsChanged);
-    },
-  );
+  collect.addEventListener("click", () => {
+    if (cache.coins.length <= 0) return;
+    playerCache.coins.push(cache.coins.pop()!);
+    updateCachePopup(cache);
+    playerCache.div.dispatchEvent(coinsChanged);
+  });
 
-  div.querySelector<HTMLButtonElement>("#deposit")!.addEventListener(
-    "click",
-    () => {
-      if (playerCoins <= 0) return;
-      coins++;
-      playerCoins--;
-      updateCachePopup(div, coins);
-      coinDisplay.dispatchEvent(coinsChanged);
-    },
-  );
+  deposit.addEventListener("click", () => {
+    if (playerCache.coins.length <= 0) return;
+    cache.coins.push(playerCache.coins.pop()!);
+    updateCachePopup(cache);
+    playerCache.div.dispatchEvent(coinsChanged);
+  });
 
-  cachePopups.set(latLng, div);
-  return div;
+  caches.set(cell, cache);
+  return cache.div;
 }
 
-function updateCachePopup(div: HTMLDivElement, coins: number): void {
-  const collect = div.querySelector<HTMLButtonElement>("#collect")!;
-  const deposit = div.querySelector<HTMLButtonElement>("#deposit")!;
+function updateCachePopup(cache: Cache): void {
+  const collect = cache.div.querySelector<HTMLButtonElement>("#collect")!;
+  const deposit = cache.div.querySelector<HTMLButtonElement>("#deposit")!;
 
-  div.innerHTML = `Coins: ${coins}<div>`;
-  div.appendChild(collect);
-  div.appendChild(deposit);
+  // Update coin value
+  cache.div.innerHTML = `Coins:<div>`;
+  cache.coins.forEach((coin) => {
+    cache.div.innerHTML += `${coinToString(coin)}<div>`;
+  });
+  cache.div.appendChild(collect);
+  cache.div.appendChild(deposit);
 
-  collect.disabled = coins <= 0;
-  deposit.disabled = playerCoins <= 0;
+  // Disable buttons depending on coin values
+  collect.disabled = cache.coins.length <= 0;
+  deposit.disabled = playerCache.coins.length <= 0;
+}
+
+function newCoinCache(cell: Cell, count: number): Cache {
+  const cache: Cache = { coins: [], div: document.createElement("div") };
+  for (let i = 0; i < count; i++) {
+    // Create a new coin
+    cache.coins.push({ cell: cell, serial: i });
+  }
+
+  return cache;
+}
+
+function coinToString(coin: Coin): string {
+  return `${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
 }
