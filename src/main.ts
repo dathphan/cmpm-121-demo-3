@@ -6,6 +6,11 @@ import luck from "./luck.ts";
 import "./style.css";
 import { Board, Cell } from "./board.ts";
 
+interface Momento {
+  toMomento(): string;
+  fromMomento(momento: string): void;
+}
+
 interface Cache {
   coins: Coin[];
   div: HTMLDivElement;
@@ -14,6 +19,26 @@ interface Cache {
 interface Coin {
   cell: Cell;
   serial: number;
+}
+
+class Geocache implements Momento, Cache {
+  coins: Coin[] = [];
+  div: HTMLDivElement = document.createElement("div");
+
+  constructor(cell: Cell, coinCount: number) {
+    for (let i = 0; i < coinCount; i++) {
+      // Create a new coin
+      this.coins.push({ cell: cell, serial: i });
+    }
+  }
+
+  toMomento(): string {
+    return JSON.stringify(this.coins);
+  }
+
+  fromMomento(momento: string) {
+    this.coins = JSON.parse(momento);
+  }
 }
 
 // App
@@ -30,24 +55,16 @@ const MAX_CACHE_COINS_SPAWN: number = 3;
 const TILE_WIDTH: number = 0.0001;
 const TILE_VISIBILITY_RADIUS: number = 8;
 
-const SEED: string = "SEED";
-
 // Variables
 const playerCache: Cache = { coins: [], div: document.createElement("div") };
-const caches: Map<Cell, Cache> = new Map();
+const caches: Map<Cell, Geocache> = new Map();
+const modifiedCaches: Map<Cell, string> = new Map();
 
 // Events
 const coinsChanged: Event = new Event("coins-changed");
+const playerMoved: Event = new Event("player-moved");
 
-// Handle Random
-let _timesRandomRan: number = 0;
-function setRandom(min: number = 0, max: number = 1): number {
-  _timesRandomRan++;
-  const rand = luck(SEED + _timesRandomRan);
-  return rand * (max - min) + min;
-}
-
-// Create Map
+// Create Board and Map
 const board: Board = new Board(TILE_WIDTH, TILE_VISIBILITY_RADIUS);
 const map = Leaflet.map(document.getElementById("map")!, {
   center: ORIGIN,
@@ -61,6 +78,8 @@ Leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution:
     '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
 }).addTo(map);
+
+// PLAYER
 
 // Player Stats
 playerCache.div.innerHTML = `Coins:`;
@@ -84,13 +103,54 @@ const playerMarker = Leaflet.marker(ORIGIN, { icon: playerIcon });
 playerMarker.bindTooltip("Your location");
 playerMarker.addTo(map);
 
-// Spawn Caches Nearby
-board.getCellsNearPoint(ORIGIN).forEach((cell) => {
-  if (setRandom() > CACHE_SPAWN_CHANCE) return;
-  createCache(cell);
+// Move Player
+const movementDirections: Map<string, Leaflet.LatLng> = new Map([
+  ["north", Leaflet.latLng(TILE_WIDTH, 0)],
+  ["south", Leaflet.latLng(-TILE_WIDTH, 0)],
+  ["west", Leaflet.latLng(0, -TILE_WIDTH)],
+  ["east", Leaflet.latLng(0, TILE_WIDTH)],
+]);
+movementDirections.forEach((direction: Leaflet.LatLng, name: string) => {
+  document.getElementById(name)!.addEventListener("click", () => {
+    const oldLatLng = playerMarker.getLatLng();
+    const newLatLng = Leaflet.latLng(
+      oldLatLng.lat + direction.lat,
+      oldLatLng.lng + direction.lng,
+    );
+    playerMarker.setLatLng(newLatLng);
+    dispatchEvent(playerMoved);
+  });
 });
 
-function createCache(cell: Cell) {
+addEventListener("player-moved", () => {
+  displayCacheOnMap(playerMarker.getLatLng());
+});
+
+// CACHE
+
+displayCacheOnMap(ORIGIN);
+
+// Display Nearby Caches
+function displayCacheOnMap(position: Leaflet.LatLng) {
+  clearMapCaches();
+
+  board.getCellsNearPoint(position).forEach((cell) => {
+    if (luck((cell.i * cell.j).toString()) > CACHE_SPAWN_CHANCE) return;
+    createCacheRect(cell);
+  });
+}
+
+// Clear Map
+function clearMapCaches() {
+  map.eachLayer((layer: Leaflet.Layer) => {
+    if (layer instanceof Leaflet.Rectangle) {
+      map.removeLayer(layer);
+    }
+  });
+  caches.clear();
+}
+
+function createCacheRect(cell: Cell) {
   const bounds: Leaflet.LatLngBounds = board.getCellBounds(cell);
 
   const rect = Leaflet.rectangle(bounds);
@@ -105,9 +165,29 @@ function cachePopup(cell: Cell): HTMLDivElement {
     return caches.get(cell)!.div;
   }
 
-  const cache: Cache = newCoinCache(cell, setRandom(0, MAX_CACHE_COINS_SPAWN));
+  // If new, create a new
+  const cache = assignCache(cell);
 
   // Collect and Deposit Buttons
+  createPopupButtons(cell, cache);
+
+  caches.set(cell, cache);
+  return cache.div;
+}
+
+function assignCache(cell: Cell): Geocache {
+  const count: number = Math.ceil(
+    luck((cell.i / cell.j).toString()) * MAX_CACHE_COINS_SPAWN,
+  );
+  const cache: Geocache = new Geocache(cell, count);
+
+  if (modifiedCaches.has(cell)) {
+    cache.fromMomento(modifiedCaches.get(cell)!);
+  }
+  return cache;
+}
+
+function createPopupButtons(cell: Cell, cache: Geocache): void {
   const collect: HTMLButtonElement = document.createElement("button");
   collect.innerHTML = "Collect";
   collect.id = "collect";
@@ -121,21 +201,26 @@ function cachePopup(cell: Cell): HTMLDivElement {
   updateCachePopup(cache);
 
   collect.addEventListener("click", () => {
-    if (cache.coins.length <= 0) return;
-    playerCache.coins.push(cache.coins.pop()!);
+    transferCoin(cache, playerCache);
     updateCachePopup(cache);
-    playerCache.div.dispatchEvent(coinsChanged);
+    momentoCache(cell, cache);
   });
 
   deposit.addEventListener("click", () => {
-    if (playerCache.coins.length <= 0) return;
-    cache.coins.push(playerCache.coins.pop()!);
+    transferCoin(playerCache, cache);
     updateCachePopup(cache);
-    playerCache.div.dispatchEvent(coinsChanged);
+    momentoCache(cell, cache);
   });
+}
 
-  caches.set(cell, cache);
-  return cache.div;
+function transferCoin(sender: Cache, reciever: Cache) {
+  if (sender.coins.length <= 0) return;
+  reciever.coins.push(sender.coins.pop()!);
+  playerCache.div.dispatchEvent(coinsChanged);
+}
+
+function momentoCache(cell: Cell, cache: Geocache): void {
+  modifiedCaches.set(cell, cache.toMomento());
 }
 
 function updateCachePopup(cache: Cache): void {
@@ -153,16 +238,6 @@ function updateCachePopup(cache: Cache): void {
   // Disable buttons depending on coin values
   collect.disabled = cache.coins.length <= 0;
   deposit.disabled = playerCache.coins.length <= 0;
-}
-
-function newCoinCache(cell: Cell, count: number): Cache {
-  const cache: Cache = { coins: [], div: document.createElement("div") };
-  for (let i = 0; i < count; i++) {
-    // Create a new coin
-    cache.coins.push({ cell: cell, serial: i });
-  }
-
-  return cache;
 }
 
 function coinToString(coin: Coin): string {
