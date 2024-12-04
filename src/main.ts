@@ -58,7 +58,12 @@ const TILE_VISIBILITY_RADIUS: number = 8;
 // Variables
 const playerCache: Cache = { coins: [], div: document.createElement("div") };
 const caches: Map<Cell, Geocache> = new Map();
-const modifiedCaches: Map<Cell, string> = new Map();
+let modifiedCaches: Map<Cell, string> = new Map();
+let usingGeolocation: boolean = false;
+const polyLine: Leaflet.Polyline = Leaflet.polyline([ORIGIN], {
+  color: "blue",
+  weight: 3,
+});
 
 // Events
 const coinsChanged: Event = new Event("coins-changed");
@@ -96,7 +101,7 @@ playerCache.div.addEventListener("coins-changed", () => {
 // Player Marker
 const playerIcon = Leaflet.divIcon({
   html: "👤",
-  iconAnchor: [16, 16],
+  iconAnchor: [22, 22],
   className: "player-icon",
 });
 const playerMarker = Leaflet.marker(ORIGIN, { icon: playerIcon });
@@ -112,6 +117,8 @@ const movementDirections: Map<string, Leaflet.LatLng> = new Map([
 ]);
 movementDirections.forEach((direction: Leaflet.LatLng, name: string) => {
   document.getElementById(name)!.addEventListener("click", () => {
+    if (usingGeolocation) return;
+
     const oldLatLng = playerMarker.getLatLng();
     const newLatLng = Leaflet.latLng(
       oldLatLng.lat + direction.lat,
@@ -124,6 +131,7 @@ movementDirections.forEach((direction: Leaflet.LatLng, name: string) => {
 
 addEventListener("player-moved", () => {
   displayCacheOnMap(playerMarker.getLatLng());
+  updatePolyline(playerMarker.getLatLng());
 });
 
 // CACHE
@@ -242,4 +250,68 @@ function updateCachePopup(cache: Cache): void {
 
 function coinToString(coin: Coin): string {
   return `${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
+}
+
+// Geolocation
+document.getElementById("geolocation")!.addEventListener("click", () => {
+  usingGeolocation = !usingGeolocation;
+  clearPolyLine();
+
+  if (usingGeolocation) {
+    map.locate({
+      setView: true,
+      watch: true,
+      enableHighAccuracy: true,
+    });
+  } else {
+    map.stopLocate();
+    updatePolyline(playerMarker.getLatLng());
+  }
+});
+
+function onLocationFound(event: Leaflet.LocationEvent) {
+  playerMarker.setLatLng(event.latlng);
+  dispatchEvent(playerMoved);
+}
+
+function onLocationError(event: Leaflet.ErrorEvent) {
+  alert(event.message);
+}
+
+map.on("locationfound", onLocationFound);
+map.on("locationerror", onLocationError);
+
+// Polyline Trail
+polyLine.addTo(map);
+
+function updatePolyline(latLng: Leaflet.LatLng): void {
+  polyLine.addLatLng(latLng);
+}
+
+function clearPolyLine(): void {
+  polyLine.setLatLngs([]);
+}
+
+// Reset Game Progress
+document.getElementById("reset")!.addEventListener("click", () => {
+  const resetPrompt = prompt(
+    "Are you sure you want to reset your progress?",
+    "Yes",
+  );
+  if (resetPrompt == "Yes") {
+    reset();
+  }
+});
+
+function reset(): void {
+  modifiedCaches = new Map();
+  playerCache.coins = [];
+  playerCache.div.dispatchEvent(coinsChanged);
+
+  clearPolyLine();
+
+  if (!usingGeolocation) {
+    playerMarker.setLatLng(ORIGIN);
+    dispatchEvent(playerMoved);
+  }
 }
