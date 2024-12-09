@@ -71,20 +71,91 @@ const playerMoved: Event = new Event("player-moved");
 
 // Create Board and Map
 const board: Board = new Board(TILE_WIDTH, TILE_VISIBILITY_RADIUS);
-const map = Leaflet.map(document.getElementById("map")!, {
-  center: ORIGIN,
-  zoom: ZOOM,
-  zoomControl: false,
-  scrollWheelZoom: false,
-});
 
-Leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: ZOOM,
-  attribution:
-    '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-}).addTo(map);
+class Renderer {
+  public map: Leaflet.Map;
+  private playerMarker: Leaflet.Marker;
+  private polyline: Leaflet.Polyline;
+
+  constructor(mapContainerId: string, origin: Leaflet.LatLng, zoom: number) {
+    // Initialize the map
+    this.map = Leaflet.map(mapContainerId, {
+      center: origin,
+      zoom: zoom,
+      zoomControl: false,
+      scrollWheelZoom: false,
+    });
+
+    // Add the tile layer
+    Leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: zoom,
+      attribution:
+        '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(this.map);
+
+    // Create the player marker
+    const playerIcon = Leaflet.divIcon({
+      html: "👤",
+      iconAnchor: [22, 22],
+      className: "player-icon",
+    });
+
+    this.playerMarker = Leaflet.marker(origin, { icon: playerIcon });
+    this.playerMarker.bindTooltip("Your location");
+    this.playerMarker.addTo(this.map);
+
+    this.polyline = Leaflet.polyline([], { color: "blue", weight: 3 });
+    this.polyline.addTo(this.map);
+  }
+
+  updatePlayerPosition(position: Leaflet.LatLng): void {
+    this.playerMarker.setLatLng(position);
+    this.polyline.addLatLng(position);
+    console.log("MOVED TO: " + position);
+  }
+
+  getPlayerPosition(): Leaflet.LatLng {
+    return this.playerMarker.getLatLng();
+  }
+
+  clearPolyLine(): void {
+    this.polyline.setLatLngs([]);
+  }
+
+  displayMessage(message: string): void {
+    alert(message);
+  }
+}
+
+const renderer = new Renderer("map", ORIGIN, ZOOM);
 
 // PLAYER
+class Player {
+  private latLng: Leaflet.LatLng;
+
+  constructor(initialPosition: Leaflet.LatLng) {
+    this.latLng = initialPosition;
+  }
+
+  move(direction: Leaflet.LatLng): void {
+    const newLatLng = Leaflet.latLng(
+      this.latLng.lat + direction.lat,
+      this.latLng.lng + direction.lng,
+    );
+    this.setLatLng(newLatLng);
+  }
+
+  setLatLng(latLng: Leaflet.LatLng): void {
+    this.latLng = latLng;
+    dispatchEvent(playerMoved);
+  }
+
+  getLatLng(): Leaflet.LatLng {
+    return this.latLng;
+  }
+}
+
+const player: Player = new Player(ORIGIN);
 
 // Player Stats
 playerCache.div.innerHTML = `Coins:`;
@@ -98,16 +169,6 @@ playerCache.div.addEventListener("coins-changed", () => {
   });
 });
 
-// Player Marker
-const playerIcon = Leaflet.divIcon({
-  html: "👤",
-  iconAnchor: [22, 22],
-  className: "player-icon",
-});
-const playerMarker = Leaflet.marker(ORIGIN, { icon: playerIcon });
-playerMarker.bindTooltip("Your location");
-playerMarker.addTo(map);
-
 // Move Player
 const movementDirections: Map<string, Leaflet.LatLng> = new Map([
   ["north", Leaflet.latLng(TILE_WIDTH, 0)],
@@ -119,19 +180,14 @@ movementDirections.forEach((direction: Leaflet.LatLng, name: string) => {
   document.getElementById(name)!.addEventListener("click", () => {
     if (usingGeolocation) return;
 
-    const oldLatLng = playerMarker.getLatLng();
-    const newLatLng = Leaflet.latLng(
-      oldLatLng.lat + direction.lat,
-      oldLatLng.lng + direction.lng,
-    );
-    playerMarker.setLatLng(newLatLng);
-    dispatchEvent(playerMoved);
+    player.move(direction);
   });
 });
 
 addEventListener("player-moved", () => {
-  displayCacheOnMap(playerMarker.getLatLng());
-  updatePolyline(playerMarker.getLatLng());
+  renderer.updatePlayerPosition(player.getLatLng());
+  displayCacheOnMap(player.getLatLng());
+  updatePolyline(player.getLatLng());
 });
 
 // CACHE
@@ -150,9 +206,9 @@ function displayCacheOnMap(position: Leaflet.LatLng) {
 
 // Clear Map
 function clearMapCaches() {
-  map.eachLayer((layer: Leaflet.Layer) => {
+  renderer.map.eachLayer((layer: Leaflet.Layer) => {
     if (layer instanceof Leaflet.Rectangle) {
-      map.removeLayer(layer);
+      renderer.map.removeLayer(layer);
     }
   });
   caches.clear();
@@ -163,7 +219,7 @@ function createCacheRect(cell: Cell) {
 
   const rect = Leaflet.rectangle(bounds);
   rect.bindPopup(() => cachePopup(cell));
-  rect.addTo(map);
+  rect.addTo(renderer.map);
 }
 
 function cachePopup(cell: Cell): HTMLDivElement {
@@ -255,22 +311,22 @@ function coinToString(coin: Coin): string {
 // Geolocation
 document.getElementById("geolocation")!.addEventListener("click", () => {
   usingGeolocation = !usingGeolocation;
-  clearPolyLine();
+  renderer.clearPolyLine();
 
   if (usingGeolocation) {
-    map.locate({
+    renderer.map.locate({
       setView: true,
       watch: true,
       enableHighAccuracy: true,
     });
   } else {
-    map.stopLocate();
-    updatePolyline(playerMarker.getLatLng());
+    renderer.map.stopLocate();
+    updatePolyline(renderer.getPlayerPosition());
   }
 });
 
 function onLocationFound(event: Leaflet.LocationEvent) {
-  playerMarker.setLatLng(event.latlng);
+  player.setLatLng(event.latlng);
   dispatchEvent(playerMoved);
 }
 
@@ -278,18 +334,14 @@ function onLocationError(event: Leaflet.ErrorEvent) {
   alert(event.message);
 }
 
-map.on("locationfound", onLocationFound);
-map.on("locationerror", onLocationError);
+renderer.map.on("locationfound", onLocationFound);
+renderer.map.on("locationerror", onLocationError);
 
 // Polyline Trail
-polyLine.addTo(map);
+polyLine.addTo(renderer.map);
 
 function updatePolyline(latLng: Leaflet.LatLng): void {
   polyLine.addLatLng(latLng);
-}
-
-function clearPolyLine(): void {
-  polyLine.setLatLngs([]);
 }
 
 // Reset Game Progress
@@ -308,10 +360,10 @@ function reset(): void {
   playerCache.coins = [];
   playerCache.div.dispatchEvent(coinsChanged);
 
-  clearPolyLine();
+  renderer.clearPolyLine();
 
   if (!usingGeolocation) {
-    playerMarker.setLatLng(ORIGIN);
+    renderer.updatePlayerPosition(ORIGIN);
     dispatchEvent(playerMoved);
   }
 }
